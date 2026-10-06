@@ -6,6 +6,9 @@
   "scripts": {
     "test": "node --experimental-strip-types --test tests/expenses.test.ts",
     "dev": "vite",
+    "dev:api": "php -S 127.0.0.1:8081 -t public server/router.php",
+    "package:beget": "npm run build && node scripts/package-beget.mjs",
+    "test:api": "node --test tests/api.integration.test.mjs",
     "build": "tsc -b && vite build",
     "lint": "oxlint",
     "preview": "vite preview"

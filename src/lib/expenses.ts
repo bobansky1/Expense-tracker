@@ -9,7 +9,21 @@ export const categories = [
   { id: 'other', name: 'Другое', color: '#99a0ac', icon: '✦' },
 ] as const
 
-export type CategoryId = typeof categories[number]['id']
+export type Category = { id: string; name: string; color: string; icon: string }
+export type CategoryId = string
+export function validateCategories(input: unknown): Category[] {
+  if (!Array.isArray(input) || input.length > 200) throw new Error('Допустимо не более 200 своих категорий.')
+  const ids = new Set<string>()
+  const names = new Set<string>(categories.map(c => c.name.toLowerCase()))
+  return input.map(c => {
+    if (!c || typeof c !== 'object' || typeof c.id !== 'string' || !/^custom-[a-zA-Z0-9_-]{1,64}$/.test(c.id)
+      || ids.has(c.id) || typeof c.name !== 'string' || !c.name.trim() || [...c.name.trim()].length > 40
+      || names.has(c.name.trim().toLowerCase()) || typeof c.color !== 'string' || !/^#[0-9a-fA-F]{6}$/.test(c.color)
+      || typeof c.icon !== 'string' || !c.icon.trim() || [...c.icon].length > 8) throw new Error('Проверьте категории: уникальное название до 40 символов, значок и цвет.')
+    ids.add(c.id); names.add(c.name.trim().toLowerCase())
+    return { id: c.id, name: c.name.trim(), color: c.color, icon: c.icon }
+  })
+}
 export type Expense = { id: string; amount: number; category: CategoryId; date: string; note: string }
 // Amounts are stored as integer kopecks to avoid floating-point rounding errors.
 export const STORAGE_KEY = 'expense-journal.v1'
@@ -29,13 +43,13 @@ export function parseAmount(value: string): number | null {
   const amount = Number(whole) * 100 + Number(fraction.padEnd(2, '0'))
   return amount > 0 && amount <= 9999999999 ? amount : null
 }
-export function validateExpenses(input: unknown): Expense[] {
+export function validateExpenses(input: unknown, available: readonly Category[] = categories): Expense[] {
   if (!Array.isArray(input) || input.length > 100000) throw new Error('Ожидается массив расходов, не более 100 000 записей.')
   const ids = new Set<string>()
   return input.map((item) => {
     if (!item || typeof item !== 'object' || typeof item.id !== 'string' || !item.id || ids.has(item.id)
       || !Number.isSafeInteger(item.amount) || item.amount <= 0 || item.amount > 9999999999
-      || !categories.some(c => c.id === item.category) || typeof item.date !== 'string' || !validDate(item.date)
+      || !available.some(c => c.id === item.category) || typeof item.date !== 'string' || !validDate(item.date)
       || typeof item.note !== 'string' || item.note.length > 200) throw new Error('Файл содержит некорректные или повторяющиеся записи.')
     ids.add(item.id)
     return { id: item.id, amount: item.amount, category: item.category, date: item.date, note: item.note }
@@ -48,10 +62,10 @@ export function loadExpenses(): Expense[] {
 export function saveExpenses(expenses: Expense[]) {
   localStorage.setItem(STORAGE_KEY, JSON.stringify(expenses))
 }
-export function summarize(expenses: Expense[]) {
+export function summarize(expenses: Expense[], available: readonly Category[] = categories) {
   return {
     total: expenses.reduce((sum, expense) => sum + expense.amount, 0),
-    byCategory: categories.map(category => ({ ...category, total: expenses.filter(e => e.category === category.id).reduce((sum, e) => sum + e.amount, 0) })).sort((a, b) => b.total - a.total),
+    byCategory: available.map(category => ({ ...category, total: expenses.filter(e => e.category === category.id).reduce((sum, e) => sum + e.amount, 0) })).sort((a, b) => b.total - a.total),
     byDay: Object.entries(expenses.reduce<Record<string, number>>((days, e) => { days[e.date] = (days[e.date] ?? 0) + e.amount; return days }, {})).sort(([a], [b]) => b.localeCompare(a)),
   }
 }

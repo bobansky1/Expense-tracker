@@ -1,6 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { parseAmount, summarize, validateExpenses, validDate } from '../src/lib/expenses.ts'
+import { categories, validateCategories, parseAmount, summarize, validateExpenses, validDate } from '../src/lib/expenses.ts'
 
 test('decimal input is converted to integer kopecks without precision loss', () => {
   assert.equal(parseAmount('0,29'), 29)
@@ -33,4 +33,19 @@ test('restore rejects corrupt, duplicate or unsupported records', () => {
   for (const invalid of [{ ...records[0], amount: 0.5 }, { ...records[0], category: 'fake' }, { ...records[0], date: '2026-02-30' }, { ...records[0], note: 'a'.repeat(201) }]) assert.throws(() => validateExpenses([invalid]))
   assert.throws(() => validateExpenses({ expenses: records }))
   assert.deepEqual(validateExpenses(JSON.parse(JSON.stringify(records))), records)
+})
+
+
+test('custom categories survive backups and contribute to summaries', () => {
+  const custom = validateCategories([{ id: 'custom-study', name: ' Образование ', icon: '📚', color: '#7297b6' }])
+  assert.equal(custom[0].name, 'Образование')
+  const expense = { ...records[0], category: 'custom-study' }
+  assert.throws(() => validateExpenses([expense]))
+  const backup = JSON.parse(JSON.stringify({ categories: custom, expenses: [expense] }))
+  const available = [...categories, ...validateCategories(backup.categories)]
+  const restored = validateExpenses(backup.expenses, available)
+  assert.equal(summarize(restored, available).byCategory.find(c => c.id === expense.category)?.total, 29)
+  assert.equal(summarize(restored, available).byCategory.reduce((sum, c) => sum + c.total, 0), 29)
+  for (const patch of [{ name: 'продукты' }, { name: ' ' }, { color: 'red' }, { id: 'food' }, { icon: '' }]) assert.throws(() => validateCategories([{ ...custom[0], ...patch }]))
+  assert.throws(() => validateCategories([...custom, { ...custom[0], id: 'custom-another' }]))
 })
