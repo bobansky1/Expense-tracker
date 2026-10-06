@@ -1,0 +1,78 @@
+name: Build and deploy
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '24'
+          cache: npm
+      - run: npm ci
+      - run: npm test
+      - run: npm run lint
+      - run: npm run build
+      - run: php -l server/app.php && php -l server/validation.php
+      - uses: actions/upload-artifact@v4
+        if: vars.BEGET_DEPLOY_ENABLED == 'true'
+        with:
+          name: site-build
+          path: dist/
+          if-no-files-found: error
+          retention-days: 1
+
+  deploy:
+    needs: verify
+    if: vars.BEGET_DEPLOY_ENABLED == 'true'
+    runs-on: ubuntu-latest
+    concurrency:
+      group: beget-production
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/download-artifact@v4
+        with:
+          name: site-build
+          path: dist/
+      - name: Upload and deploy via SSH
+        shell: bash
+        env:
+          BEGET_SSH_HOST: ${{ secrets.BEGET_SSH_HOST }}
+          BEGET_SSH_USER: ${{ secrets.BEGET_SSH_USER }}
+          BEGET_SSH_PORT: ${{ vars.BEGET_SSH_PORT }}
+          BEGET_SSH_KEY: ${{ secrets.BEGET_SSH_KEY }}
+          BEGET_SSH_KNOWN_HOSTS: ${{ secrets.BEGET_SSH_KNOWN_HOSTS }}
+          BEGET_PUBLIC_DIR: ${{ vars.BEGET_PUBLIC_DIR }}
+          BEGET_PRIVATE_DIR: ${{ vars.BEGET_PRIVATE_DIR }}
+        run: |
+          set -euo pipefail
+          port="${BEGET_SSH_PORT:-22}"
+          [[ "$port" =~ ^[0-9]{1,5}$ ]] || { echo 'Invalid SSH port'; exit 1; }
+          [[ "$BEGET_SSH_HOST" =~ ^[a-zA-Z0-9.-]+$ && "$BEGET_SSH_USER" =~ ^[a-zA-Z0-9_-]+$ ]] || { echo 'Invalid SSH host or user'; exit 1; }
+          for dir in "$BEGET_PUBLIC_DIR" "$BEGET_PRIVATE_DIR"; do
+            [[ "$dir" =~ ^/[a-zA-Z0-9_./-]+$ && "$dir" != '/' ]] || { echo 'Invalid deployment directory'; exit 1; }
+          done
+          [[ -n "$BEGET_SSH_KEY" && -n "$BEGET_SSH_KNOWN_HOSTS" ]] || { echo 'SSH secrets are missing'; exit 1; }
+          umask 077
+          ssh_dir="$(mktemp -d)"
+          package_dir="$(mktemp -d)"
+          trap 'rm -rf "$ssh_dir" "$package_dir"' EXIT
+          printf '%s\n' "$BEGET_SSH_KEY" > "$ssh_dir/key"
+          printf '%s\n' "$BEGET_SSH_KNOWN_HOSTS" > "$ssh_dir/known_hosts"
+          mkdir -p "$package_dir/public_html" "$package_dir/private"
+          cp -a dist/. "$package_dir/public_html/"
+          cp server/app.php server/validation.php "$package_dir/private/"
+          archive="traty-deploy-${GITHUB_SHA}.tar.gz"
+          tar -C "$package_dir" -czf "$ssh_dir/$archive" public_html private
+          ssh_options=(-i "$ssh_dir/key" -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile="$ssh_dir/known_hosts" -p "$port")
+          scp -i "$ssh_dir/key" -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile="$ssh_dir/known_hosts" -P "$port" "$ssh_dir/$archive" "$BEGET_SSH_USER@$BEGET_SSH_HOST:$archive"
+          ssh "${ssh_options[@]}" "$BEGET_SSH_USER@$BEGET_SSH_HOST" "bash -s -- '$BEGET_PUBLIC_DIR' '$BEGET_PRIVATE_DIR' '$archive'" < .github/scripts/deploy-beget.sh
